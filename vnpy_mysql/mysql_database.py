@@ -159,6 +159,37 @@ class DbTickOverview(Model):
         database: PeeweeMySQLDatabase = db
         indexes: tuple = ((("symbol", "exchange"), True),)
 
+"""nifx 20250621"""
+class DbSymbolInfo(Model):
+    """标的物信息表映射对象"""
+
+    id: AutoField = AutoField()
+
+    symbol = CharField(verbose_name='标的代码')
+    sec_type1 = IntegerField(verbose_name='证券品种大类')
+    sec_type2 = IntegerField(verbose_name='证券品种细类')
+    board = IntegerField(null=True, verbose_name='板块分类')
+    exchange = CharField(verbose_name='交易所代码')
+    sec_id = CharField(verbose_name='交易所标的代码')
+    sec_name = CharField(null=True, verbose_name='交易所标的名称')
+    sec_abbr = CharField(null=True, verbose_name='交易所标的简称')
+    price_tick = DoubleField(null=True, verbose_name='最小变动单位')
+    trade_n = IntegerField(null=True, verbose_name='交易制度')
+    listed_date = DateTimeField(null=True, verbose_name='上市日期')
+    delisted_date = DateTimeField(null=True, verbose_name='退市日期')
+    underlying_symbol = CharField(null=True, verbose_name='标的资产symbol')
+    option_type = CharField(null=True, verbose_name='期权行权方式')
+    option_margin_ratio1 = DoubleField(null=True, verbose_name='期权保证金计算系数1')
+    option_margin_ratio2 = DoubleField(null=True, verbose_name='期权保证金计算系数2')
+    call_or_put = CharField(null=True, verbose_name='期权合约类型')
+    conversion_start_date = DateTimeField(null=True, verbose_name='可转债开始转股日期')
+    delisting_begin_date = DateTimeField(null=True, verbose_name='退市整理开始日')
+
+    class Meta:
+        database: PeeweeMySQLDatabase = db
+        indexes: tuple = ((("symbol", "exchange"), True),)
+        table_name = 'tsymbolinfo'
+
 
 class MysqlDatabase(BaseDatabase):
     """Mysql数据库接口"""
@@ -171,6 +202,10 @@ class MysqlDatabase(BaseDatabase):
         # 如果数据表不存在，则执行创建初始化
         if not DbBarData.table_exists():
             self.db.create_tables([DbBarData, DbTickData, DbBarOverview, DbTickOverview])
+
+        # nifx 20250621如果数据表不存在，则执行创建初始化
+        if not DbSymbolInfo.table_exists():
+            self.db.create_tables([DbSymbolInfo])
 
     def save_bar_data(self, bars: list[BarData], stream: bool = False) -> bool:
         """保存K线数据"""
@@ -192,6 +227,7 @@ class MysqlDatabase(BaseDatabase):
             d.pop("gateway_name")
             d.pop("vt_symbol")
             if "extra" in d:
+                # 如果有extra字段，则删除
                 d.pop("extra")
             data.append(d)
 
@@ -505,3 +541,116 @@ class MysqlDatabase(BaseDatabase):
             overview.end = end_bar.datetime
 
             overview.save()
+    
+    """nifx 20250621"""
+    def save_symbol_info(self, symbol_infos: list[DbSymbolInfo]) -> bool:
+        """保存标的物信息"""
+        if not symbol_infos:
+            return True
+                
+        # 转换为数据库模型需要的字典格式
+        data = []
+        for info in symbol_infos:
+            info.listed_date = convert_tz(info.listed_date) if info.listed_date else None
+            info.delisted_date = convert_tz(info.delisted_date) if info.delisted_date else None
+            info.conversion_start_date = convert_tz(info.conversion_start_date) if info.conversion_start_date else None
+            info.delisting_begin_date = convert_tz(info.delisting_begin_date) if info.delisting_begin_date else None
+
+            d = {
+                "symbol": info.symbol,
+                "exchange": info.exchange,
+                "sec_type1": info.sec_type1,
+                "sec_type2": info.sec_type2,
+                "board": info.board,
+                "sec_id": info.sec_id,
+                "sec_name": info.sec_name,
+                "sec_abbr": info.sec_abbr,
+                "price_tick": info.price_tick,
+                "trade_n": info.trade_n,
+                "listed_date": info.listed_date,
+                "delisted_date": info.delisted_date,
+                "underlying_symbol": info.underlying_symbol,
+                "option_type": info.option_type,
+                "option_margin_ratio1": info.option_margin_ratio1,
+                "option_margin_ratio2": info.option_margin_ratio2,
+                "call_or_put": info.call_or_put,
+                "conversion_start_date": info.conversion_start_date,
+                "delisting_begin_date": info.delisting_begin_date
+            }
+            data.append(d)
+        
+        # 批量插入/更新
+        with self.db.atomic():
+            for batch in chunked(data, 100):  # 每批100条
+                DbSymbolInfo.insert_many(batch).on_conflict_replace().execute()
+                
+        return True
+
+    def load_symbol_info(
+        self, 
+        symbol: str | None = None,
+        exchange: str | None = None
+    ) -> list[DbSymbolInfo]:
+        """查询标的物信息"""
+        query = DbSymbolInfo.select()
+        
+        # 构建查询条件
+        conditions = []
+        if symbol:
+            conditions.append(DbSymbolInfo.symbol == symbol)
+        if exchange:
+            conditions.append(DbSymbolInfo.exchange == exchange)
+            
+        if conditions:
+            query = query.where(*conditions)
+            
+        result = []
+        for db_info in query:
+            # 转换为SymbolInfo对象
+            info = DbSymbolInfo(
+                symbol=db_info.symbol,
+                sec_type1=db_info.sec_type1,
+                sec_type2=db_info.sec_type2,
+                exchange=db_info.exchange,
+                sec_id=db_info.sec_id,
+                board=db_info.board,
+                sec_name=db_info.sec_name,
+                sec_abbr=db_info.sec_abbr,
+                price_tick=db_info.price_tick,
+                trade_n=db_info.trade_n,
+                listed_date=db_info.listed_date,
+                delisted_date=db_info.delisted_date,
+                underlying_symbol=db_info.underlying_symbol,
+                option_type=db_info.option_type,
+                option_margin_ratio1=db_info.option_margin_ratio1,
+                option_margin_ratio2=db_info.option_margin_ratio2,
+                call_or_put=db_info.call_or_put,
+                conversion_start_date=db_info.conversion_start_date,
+                delisting_begin_date=db_info.delisting_begin_date
+            )
+            result.append(info)
+            
+        return result
+
+    def delete_symbol_info(
+        self, 
+        symbol: str, 
+        exchange: str
+    ) -> int:
+        """删除标的物信息"""
+        if not symbol and not exchange:
+            return 0  # 防止误删全部数据
+            
+        query = DbSymbolInfo.delete()
+        
+        conditions = []
+        if symbol:
+            conditions.append(DbSymbolInfo.symbol == symbol)
+        if exchange:
+            conditions.append(DbSymbolInfo.exchange == exchange)
+            
+        if conditions:
+            query = query.where(*conditions)
+            return query.execute()
+            
+        return 0
